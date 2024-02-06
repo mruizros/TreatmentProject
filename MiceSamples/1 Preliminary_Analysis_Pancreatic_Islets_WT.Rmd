@@ -1,0 +1,183 @@
+---
+title: "Preliminary Analyasis WT Pancreatic Islets"
+output: html_notebook
+---
+
+This flow allow the preliminary analysis of the sequencing data and the creation of a DESeq object
+  
+
+Load the R libraries.
+```{r}
+library("biomaRt")
+library("tximport")
+library("Rsamtools")
+library("DESeq2")
+library("ggplot2")
+library("dplyr")
+library("RColorBrewer")
+library("pheatmap")
+library("PoiClaClu")
+```
+
+The table contains the information at the transcript level. For standard analysis, however, we need to generate expression counts at the gene level. To do so, we need to generate a *tx2gene* table mapping transcripts to genes.
+```{r}
+ensembl <- useMart(biomart = "ensembl", dataset = "mmusculus_gene_ensembl")
+t2g <- getBM(attributes = c("ensembl_transcript_id", "ensembl_gene_id", "external_gene_name"), mart = ensembl)
+```
+
+Read in kallisto output while simultanesously summarizing the expression at the gene-level.
+```{r}
+files <- list.files("Data/output", full.names = T)
+files <- paste0(files, '/abundance.h5')
+txi.kallisto.tsv <- tximport(files, type = "kallisto", tx2gene = t2g, ignoreAfterBar = TRUE, ignoreTxVersion = T)
+colnames(txi.kallisto.tsv$counts) <- files
+save(txi.kallisto.tsv, file = 'Data/txiMiceDiana_WT.RData')
+```
+
+
+
+Load sample info from the sample table
+```{r}
+sampleTable <- read.csv("Data/SampleTableRatones_Diana_WT.csv", sep = ";")
+```
+
+
+Load tximport object produced before.
+```{r}
+load(file = "Data/txiMiceDiana_WT.RData")
+```
+
+
+Generate DESeq2 object
+```{r}
+dds <- DESeqDataSetFromTximport(txi = txi.kallisto.tsv, colData = sampleTable, design = ~ Txt)
+keep <- rowSums(counts(dds)) >= 10
+dds <- dds[keep,]
+dds <- DESeq(dds)
+```
+
+Pre-filtering: Remove rows that have no counts, or only a single count across all samples
+```{r}
+nrow(dds)
+dds <- dds[ rowSums(counts(dds)) > 1, ]
+nrow(dds)
+```
+
+SAVE DDS
+```{r}
+save(dds, file = 'dds_Mice_Diana_WT.RData')
+```
+
+
+
+Some commands to se the object
+```{r}
+round( colSums(assay(dds)) / 1e6, 1 )
+```
+
+
+***The variance stabilizing transformation and the rlog and vst***
+
+VSD
+```{r}
+vsd <- vst(dds, blind = FALSE)
+#head(assay(vsd), 3)
+colData(vsd)
+```
+
+rlog:
+```{r}
+rld <- rlog(dds, blind = FALSE)
+#head(assay(rld), 3)
+colData(rld)
+```
+
+To show the effect of the transformation, in the figure below we plot the first sample against the second, first simply using the log2 function (after adding 1, to avoid taking the log of zero), and then using the VST and rlog-transformed values. For the log2 approach, we need to first estimate size factors to account for sequencing depth, and then specify normalized=TRUE. Sequencing depth correction is done automatically for the vst and rlog.
+
+```{r}
+dds <- estimateSizeFactors(dds)
+
+df <- bind_rows(
+  as_data_frame(log2(counts(dds, normalized=TRUE)[, 1:2]+1)) %>%
+         mutate(transformation = "log2(x + 1)"),
+  as_data_frame(assay(vsd)[, 1:2]) %>% mutate(transformation = "vst"),
+  as_data_frame(assay(rld)[, 1:2]) %>% mutate(transformation = "rlog"))
+  
+colnames(df)[1:2] <- c("x", "y")  
+
+ggplot(df, aes(x = x, y = y)) + geom_hex(bins = 80) +
+  coord_fixed() + facet_grid( . ~ transformation) 
+```
+
+Sample distances
+
+```{r}
+sampleDists <- dist(t(assay(rld)))
+
+```
+
+Heatmap of the distances
+
+```{r}
+sampleDistMatrix <- as.matrix( sampleDists )
+rownames(sampleDistMatrix) <- paste( rld$Txt, rld$Genotype, sep = " - " )
+colnames(sampleDistMatrix) <- NULL
+colors <- colorRampPalette( rev(brewer.pal(9, "Blues")) )(255)
+pheatmap(sampleDistMatrix,
+         clustering_distance_rows = sampleDists,
+         clustering_distance_cols = sampleDists,
+         col = colors)
+```
+
+Poisson Distance (Witten 2011)
+```{r}
+poisd <- PoissonDistance(t(counts(dds)))
+
+samplePoisDistMatrix <- as.matrix( poisd$dd )
+rownames(samplePoisDistMatrix) <- paste( dds$Txt, dds$Genotype, sep=" - " )
+colnames(samplePoisDistMatrix) <- NULL
+pheatmap(samplePoisDistMatrix,
+         clustering_distance_rows = poisd$dd,
+         clustering_distance_cols = poisd$dd,
+         col = colors, fontsize_row= 6)
+```
+
+HEATMAP OF GENES
+
+```{r}
+topVarGenes <- head(order(rowVars(assay(rld)), decreasing = TRUE), 50)
+mat  <- assay(rld)[ topVarGenes, ]
+mat  <- mat - rowMeans(mat)
+anno <- as.data.frame(colData(rld)[, c("Txt","Treatment")])
+pheatmap(mat, annotation_col = anno, fontsize_col= 1, fontsize_row= 4)
+```
+
+PCA
+```{r}
+plotPCA(rld, intgroup = c("Txt")) # treat must match a column name in sampleTable
+```
+
+
+PCA from scratch
+```{r}
+pcaData <- plotPCA(rld, intgroup = c( "Genotype","Txt"), returnData = TRUE)
+
+percentVar <- round(100 * attr(pcaData, "percentVar"))
+
+ggplot(pcaData, aes(x = PC1, y = PC2, color = Txt, shape = Genotype)) +
+  geom_point(size =3) +
+  xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+  ylab(paste0("PC2: ", percentVar[2], "% variance")) +
+  coord_fixed()
+```
+
+
+Lets look at the distribution of all genes across samples
+```{r}
+par(mfrow = c(1, 2))
+ok <- which(rowMeans(counts(dds)) > 1)
+boxplot(log(counts(dds, normalized = F) + 1)[ok,], main = 'Raw')
+boxplot(log(counts(dds, normalized = T) + 1)[ok,], main = 'Norm')
+```
+
+

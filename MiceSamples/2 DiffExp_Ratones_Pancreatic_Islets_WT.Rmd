@@ -1,0 +1,631 @@
+---
+title: "Differential Expression WT Pancreatic Islets"
+output: html_notebook
+editor_options: 
+  chunk_output_type: console
+---
+
+This flow allow the differential expression analysis of WT pancreatic islets
+
+Remove all existing variables
+```{r}
+rm(list=ls())
+```
+
+
+Load the Summirized Experiment with the counts
+```{r}
+load(file = "Data/txiMiceDiana_WT.RData")
+
+```
+
+
+
+
+Load sample info from the sample table
+```{r}
+sampleTable <- read.csv("Data/SampleTableRatones_Diana_WT.csv", sep = ";")
+```
+
+Libraries
+```{r}
+library("DESeq2")
+library("pheatmap")
+library("AnnotationDbi")
+library("Mus.musculus")
+library("ggplot2")
+library("ggpubr")
+library("openxlsx")
+library("biomaRt")
+library("extrafont")
+```
+
+The table contains the information at the transcript level. For standard analysis, however, we need to generate expression counts at the gene level. To do so, we need to generate a *tx2gene* table mapping transcripts to genes.
+```{r}
+ensembl <- useMart(biomart = "ensembl", dataset = "mmusculus_gene_ensembl")
+t2g <- getBM(attributes = c("ensembl_transcript_id", "ensembl_gene_id", "external_gene_name"), mart = ensembl)
+```
+
+
+Generate DESeq2 object
+```{r}
+dds <- DESeqDataSetFromTximport(txi = txi.kallisto.tsv, colData = sampleTable, design = ~ Txt)
+keep <- rowSums(counts(dds)) >= 10
+dds <- dds[keep,]
+dds$Txt <- factor(dds$Txt, levels = c("Chow","Ari","Ola"))
+dds <- DESeq(dds)
+```
+
+Pre-filtering: Remove rows that have no counts, or only a single count across all samples
+```{r}
+nrow(dds)
+dds <- dds[ rowSums(counts(dds)) > 1, ]
+nrow(dds)
+```
+
+Stablish the levels for Treatment
+```{r}
+dds$Txt <- factor(dds$Txt, levels = c("Chow","Ari","Ola"))
+```
+
+
+```{r}
+rld <- rlog(dds, blind=FALSE)
+plotPCA(rld, intgroup = c('Txt'))
+```
+
+PCA from scratch
+```{r}
+pcaData <- plotPCA(rld, intgroup = c( "Txt"), returnData = TRUE)
+
+percentVar <- round(100 * attr(pcaData, "percentVar"))
+
+ggplot(pcaData, aes(x = PC1, y = PC2, color = Txt)) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),panel.background = element_blank(), axis.line =     element_line(colour = "black")) +
+  geom_point(size =4) +
+  scale_color_manual(values=c('red', 'darkgreen' ,'blue'))+
+  xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+  ylab(paste0("PC2: ", percentVar[2], "% variance")) +
+  coord_fixed()
+```
+
+
+****OLANZAPINE****
+
+```{r}
+res_Ola <- results(dds, contrast = c("Txt","Ola","Chow"))
+
+summary(res_Ola)
+#res_Ola
+```
+
+
+ADD ANOTATIONS:
+```{r}
+res_Ola$symbol <- mapIds(Mus.musculus,
+                     keys=row.names(res_Ola),
+                     column="SYMBOL",
+                     keytype="ENSEMBL",
+                     multiVals="first")
+
+res_Ola$entrez <- mapIds(Mus.musculus,
+                     keys=row.names(res_Ola),
+                     column="ENTREZID",
+                     keytype="ENSEMBL",
+                     multiVals="first")
+
+res_Ola$symbol2 <- t2g$external_gene_name[match(rownames(res_Ola), t2g$ensembl_gene_id)]
+
+resOrdered_Ola <- res_Ola[order(res_Ola$padj),]
+head(resOrdered_Ola)
+```
+###### 
+
+
+```{r}
+betas <- coef(dds)
+colnames(betas)
+#topGenes_Ola <- c(head(order(res_Ola$log2FoldChange),50),tail(order(res_Ola$log2FoldChange),50))
+topGenes_Ola <- head(order(res_Ola$padj),15)
+mat_Ola <- betas[topGenes_Ola, c(3,2)]
+thr <- 3 
+mat_Ola[mat_Ola < -thr] <- -thr
+mat_Ola[mat_Ola > thr] <- thr
+pheatmap(mat_Ola, breaks=NA,
+         cluster_col=FALSE,cluster_cols = FALSE, labels_row = res_Ola$symbol2[topGenes_Ola],fontsize = 8, show_rownames = T, cellwidth=16, cellheight=16, filename = "Heatmaps/FC_Olanzapine_D_WT.pdf")
+
+write.xlsx(as.data.frame(res_Ola[topGenes_Ola,]), file = "CSVs/PA_Olanzapine_D_WT.xlsx", row.names= TRUE)
+```
+
+SAVE HEATMAP CVS
+```{r}
+resOrdered_Ola <- res_Ola[order(res_Ola$log2FoldChange),]
+resOrderedDF_Ola <- as.data.frame(resOrdered_Ola)
+write.csv(resOrderedDF_Ola, file = "CSVs/FC_Olanzapine_D_WT.csv")
+```
+
+SAVE UPREGULATED AND DOWN REGULATED
+```{r}
+LFC_Ola <- res_Ola$log2FoldChange
+Allup_Ola <- res_Ola[(which(LFC_Ola > 1.5)),]
+Allup_DP_Ola <- as.data.frame(Allup_Ola)
+write.csv(Allup_DP_Ola, file = "CSVs/Allup_Olanzapine_D_1_5_WT.csv")
+
+
+Alldown_Ola <- res_Ola[(which(LFC_Ola < -1.5)),]
+Alldown_DP_Ola <- as.data.frame(Alldown_Ola)
+write.csv(Alldown_DP_Ola, file = "CSVs/Alldown_Olanzapine_D_1_5_WT.csv")
+```
+
+
+```{r}
+resOlaforplot <- res_Ola[sort.list(res_Ola$padj),]
+```
+
+
+Volcano plot
+```{r}
+pdf("Heatmaps/VolcanoOla.pdf",width=7,height=5)
+plot(resOlaforplot$log2FoldChange[2:nrow(resOlaforplot)], -log10(resOlaforplot$padj[2:nrow(resOlaforplot)]), xlim=c(-7,7), xlab="Fold Change Olanzapine Vs Untreated", ylab="-log10(padj)")
+text(resOlaforplot$log2FoldChange[2:12], -log10(resOlaforplot$padj[2:12]), resOlaforplot$symbol2[2:12], pos = 3, font = 0.5, cex= 0.9)
+dev.off()
+```
+
+
+MAplot
+```{r}
+plotMA(resOrdered_Ola, ylim=c(-2,2))
+```
+
+```{r}
+resLFC <- lfcShrink(dds, coef="condition_treated_vs_untreated", type="apeglm")
+```
+
+
+Lets redo PCA using only the 500 most differentially expressed genes by cellline. Now the datapoints cluster by cellline and the treatment has no effect on the clustering.
+```{r}
+#pdf("Heatmaps/TopOlaPCA.pdf",width=7,height=7)
+top500 <- rownames(resOrdered_Ola)[1:15]
+rld_top_Ola <- rlog(dds[top500,which(dds$Txt == "Ola" | dds$Txt == "Chow")], blind=FALSE)
+plotPCA(rld_top_Ola, intgroup = c('Txt'))
+#dev.off()
+```
+
+
+PCA from scratch
+```{r}
+pcaData <- plotPCA(rld_top_Ola, intgroup = c( "Txt" ), returnData = TRUE)
+
+percentVar <- round(100 * attr(pcaData, "percentVar"))
+
+ggplot(pcaData, aes(x = PC1, y = PC2, color = Txt)) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),panel.background = element_blank(), axis.line = element_line(colour = "black"), axis.title.x = element_text(family="Arial", size=12),axis.title.y = element_text(family="Arial", size=12), legend.text = element_text(family="Arial", size=12), legend.title = element_text(family="Arial", size=14)) +
+  geom_point(aes(shape=Txt), size=4) +
+  scale_shape_manual(values=c(1, 19))+
+  scale_color_manual(values=c('black', '#7883BA')) +
+  xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+  ylab(paste0("Principal Component Analysis - Olanzapine\n\nPC2: ", percentVar[2], "% variance")) +
+  
+  coord_fixed()
+```
+
+****ARIPIPRAZOLE****
+
+```{r}
+res_Ari <- results(dds, contrast = c("Txt","Ari","Chow"))
+res_Ari
+summary(res_Ari)
+```
+
+
+ADD ANOTATIONS:
+```{r}
+res_Ari$symbol <- mapIds(Mus.musculus,
+                     keys=row.names(res_Ari),
+                     column="SYMBOL",
+                     keytype="ENSEMBL",
+                     multiVals="first")
+
+res_Ari$entrez <- mapIds(Mus.musculus,
+                     keys=row.names(res_Ari),
+                     column="ENTREZID",
+                     keytype="ENSEMBL",
+                     multiVals="first")
+
+res_Ari$symbol2 <- t2g$external_gene_name[match(rownames(res_Ari), t2g$ensembl_gene_id)]
+
+resOrdered_Ari <- res_Ari[order(res_Ari$padj),]
+head(resOrdered_Ari)
+```
+
+
+
+```{r}
+betas <- coef(dds)
+colnames(betas)
+topGenes_Ari <- head(order(res_Ari$padj),50)
+mat_Ari <- betas[topGenes_Ari, c(2,3) ]
+thr <- 3 
+mat_Ari[mat_Ari < -thr] <- -thr
+mat_Ari[mat_Ari > thr] <- thr
+pheatmap(mat_Ari, breaks=NA,
+         cluster_col=FALSE,cluster_cols = FALSE, labels_row = res_Ari$symbol2[topGenes_Ari],fontsize = 4, width= 2, height=4, show_rownames = T, filename = "Heatmaps/FC_Aripiprazole_D_WT50.pdf")
+#
+write.xlsx(as.data.frame(res_Ari[topGenes_Ari,]), file = "CSVs/PA_Aripiprazole_D_WT50.xlsx", row.names= TRUE)
+```
+
+
+
+SAVE HEATMAP CVS
+```{r}
+resOrdered_Ari <- res_Ari[order(res_Ari$log2FoldChange),]
+resOrderedDF_Ari <- as.data.frame(resOrdered_Ari)
+write.csv(resOrderedDF_Ari, file = "CSVs/FC_Aripiprazole_D_WT.csv")
+```
+
+SAVE UPREGULATED AND DOWN REGULATED
+```{r}
+LFC_Ari <- res_Ari$log2FoldChange
+Allup_Ari <- res_Ari[(which(LFC_Ari > 1.5)),]
+Allup_DP_Ari <- as.data.frame(Allup_Ari)
+write.csv(Allup_DP_Ari, file = "CSVs/Allup_Aripiprazole_D_1_5_WT.csv")
+
+
+Alldown_Ari <- res_Ari[(which(LFC_Ari < -1.5)),]
+Alldown_DP_Ari <- as.data.frame(Alldown_Ari)
+write.csv(Alldown_DP_Ari, file = "CSVs/Alldown_Aripiprazole_D_1_5_WT.csv")
+```
+
+
+```{r}
+resAriforplot <- res_Ari[sort.list(res_Ari$padj),]
+```
+
+
+Volcano plot
+```{r}
+pdf("Heatmaps/VolcanoAri.pdf",width=7,height=5)
+plot(resAriforplot$log2FoldChange, -log10(resAriforplot$padj), xlab="Fold Change Aripiprazole Vs Untreated", ylab="-log10(padj)")
+text(resAriforplot$log2FoldChange[0:10], -log10(resAriforplot$padj[0:10]), resAriforplot$symbol2[0:10], offset = 1, font = 1 )
+dev.off()
+```
+
+```{r}
+plot(resAriforplot$log2FoldChange, -log10(resAriforplot$padj), xlab="Fold Change Aripiprazole Vs Untreated", ylab="-log10(padj)")
+text(resAriforplot$log2FoldChange[0:10], -log10(resAriforplot$padj[0:10]), resAriforplot$symbol2[0:10], pos = 3, font = 0.5, cex= 0.9 )
+```
+
+
+
+MAplot
+```{r}
+plotMA(res_Ari, ylim=c(-2,2))
+```
+
+
+
+
+
+
+Lets redo PCA using only the 500 most differentially expressed genes by cellline. Now the datapoints cluster by cellline and the treatment has no effect on the clustering.
+```{r}
+pdf("Heatmaps/TopAriPCA.pdf",width=7,height=7)
+top500 <- rownames(resOrdered_Ari)[1:244]
+rld_top_Ari <- rlog(dds[top500,which(dds$Txt == "Ari" | dds$Txt == "Chow")], blind=FALSE)
+plotPCA(rld_top_Ari, intgroup = c('Txt'))
+dev.off()
+```
+
+
+
+PCA from scratch
+```{r}
+pcaData <- plotPCA(rld_top_Ari, intgroup = c( "Txt"), returnData = TRUE)
+
+percentVar <- round(100 * attr(pcaData, "percentVar"))
+
+ggplot(pcaData, aes(x = PC1, y = PC2, color = Txt)) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),panel.background = element_blank(), axis.line =     element_line(colour = "black")) +
+  geom_point(aes(shape=Txt), size=4) +
+  scale_shape_manual(values=c(1, 19))+
+  scale_color_manual(values=c('black', '#DD5356')) +
+  xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+  ylab(paste0("PC2: ", percentVar[2], "% variance")) +
+  coord_fixed()
+```
+
+
+
+****ARIPIPRAZOLE VS OLANZAPINE****
+
+```{r}
+res_AO <- results(dds, contrast = c("Txt","Ari","Ola"))
+res_AO
+summary(res_AO)
+```
+
+ADD ANOTATIONS:
+```{r}
+res_AO$symbol <- mapIds(Mus.musculus,
+                     keys=row.names(res_AO),
+                     column="SYMBOL",
+                     keytype="ENSEMBL",
+                     multiVals="first")
+
+res_AO$entrez <- mapIds(Mus.musculus,
+                     keys=row.names(res_AO),
+                     column="ENTREZID",
+                     keytype="ENSEMBL",
+                     multiVals="first")
+
+res_AO$symbol2 <- t2g$external_gene_name[match(rownames(res_AO), t2g$ensembl_gene_id)]
+
+resOrdered_AO <- res_AO[order(res_AO$padj),]
+head(resOrdered_AO)
+```
+
+
+```{r}
+betas <- coef(dds)
+colnames(betas)
+topGenes_AO <- head(order(res_AO$padj),35)
+mat_AO <- betas[topGenes_AO, c(2,3) ]
+thr <- 3 
+mat_AO[mat_AO < -thr] <- -thr
+mat_AO[mat_AO > thr] <- thr
+pheatmap(mat_AO, breaks=NA,
+         cluster_col=FALSE,cluster_cols = FALSE, labels_row = res_AO$symbol2[topGenes_AO],fontsize = 4, width= 2, height=4, show_rownames = T, filename = "Heatmaps/FC_AO_D_WT35.pdf")
+#
+write.xlsx(as.data.frame(res_AO[topGenes_AO,]), file = "CSVs/PA_AO_D_WT35.xlsx", row.names= TRUE)
+```
+
+
+
+```{r}
+resAOforplot <- res_AO[sort.list(res_AO$padj),]
+```
+
+
+Volcano plot
+```{r}
+pdf("Heatmaps/VolcanoAO.pdf",width=7,height=5)
+plot(resAOforplot$log2FoldChange, -log10(resAOforplot$padj), xlab="Fold Change Aripiprazole Vs Olanzapine", ylab="-log10(padj)")
+text(resAOforplot$log2FoldChange[0:10], -log10(resAOforplot$padj[0:10]), resAOforplot$symbol2[0:10], offset = 1, font = 1 )
+dev.off()
+```
+
+
+MAplot
+```{r}
+plotMA(res_AO, ylim=c(-2,2))
+```
+
+
+Lets redo PCA using only the 500 most differentially expressed genes by cellline. Now the datapoints cluster by cellline and the treatment has no effect on the clustering.
+```{r}
+pdf("Heatmaps/TopAOPCA.pdf",width=7,height=7)
+top500 <- rownames(resOrdered_AO)[1:35]
+rld_top_AO <- rlog(dds[top500,which(dds$Txt == "Ari" | dds$Txt == "Ola")], blind=FALSE)
+plotPCA(rld_top_AO, intgroup = c('Txt'))
+dev.off()
+```
+
+
+
+
+
+
+
+
+
+
+
+Lets take a look at some example gene.
+```{r}
+pdf("Boxplot/Tph1.pdf",width=7,height=7)
+boxplot(split(counts(dds)['ENSMUSG00000040046',], dds$Txt), main = "Tph1", sort.names = FALSE )
+dev.off()
+```
+
+Lets take a look at some example gene.
+```{r}
+pdf("Boxplot/Tph2.pdf",width=7,height=7)
+boxplot(split(counts(dds)['ENSMUSG00000006764',], dds$Txt), main = "Tph2", sort.names = FALSE )
+dev.off()
+```
+
+Lets take a look at some example gene.
+```{r}
+pdf("Boxplot/Htr3a.pdf",width=7,height=7)
+boxplot(split(counts(dds)['ENSMUSG00000032269',], dds$Txt), main = "Htr3a", sort.names = FALSE )
+dev.off()
+```
+
+Lets take a look at some example gene.
+```{r}
+pdf("Boxplot/Htr2b.pdf",width=7,height=7)
+boxplot(split(counts(dds)['ENSMUSG00000026228',], dds$Txt), main = "Htr2b", sort.names = FALSE )
+dev.off()
+```
+
+Lets take a look at some example gene.
+```{r}
+pdf("Boxplot/Ins2.pdf",width=7,height=7)
+boxplot(split(counts(dds)['ENSMUSG00000000215',], dds$Txt), main = "Ins2", sort.names = FALSE )
+dev.off()
+```
+
+Lets take a look at some example gene.
+```{r}
+pdf("Boxplot/Pdx1.pdf",width=7,height=7)
+boxplot(split(counts(dds)['ENSMUSG00000029644',], dds$Txt), main = "Pdx1", sort.names = FALSE )
+dev.off()
+```
+
+Lets take a look at some example gene.
+```{r}
+pdf("Boxplot/Gck.pdf",width=7,height=7)
+boxplot(split(counts(dds)['ENSMUSG00000041798',], dds$Txt), main = "Gck", sort.names = FALSE )
+dev.off()
+```
+
+
+Lets take a look at some example gene.
+```{r}
+pdf("Boxplot/Gcg.pdf",width=7,height=7)
+boxplot(split(counts(dds)['ENSMUSG00000000394',], dds$Txt), main = "Gcg", sort.names = FALSE )
+dev.off()
+```
+
+```{r}
+Lista <- c('ENSMUSG00000040046', 'ENSMUSG00000006764', 'ENSMUSG00000032269', 'ENSMUSG00000026228', 'ENSMUSG00000000215', 'ENSMUSG00000029644', 'ENSMUSG00000041798', 'ENSMUSG00000000394'  )
+
+rld <- rlog(dds, blind = FALSE)
+```
+
+HEATMAP OF GENES
+
+```{r}
+mat  <- assay(rld)[ Lista, ]
+mat  <- mat - rowMeans(mat)
+anno <- as.data.frame(colData(rld)[, c("Txt","Treatment")])
+pheatmap(mat, annotation_col = anno, fontsize_col= 1, fontsize_row= 8 )
+
+```
+
+
+
+
+```{r}
+boxplot(split(counts(dds)['ENSMUSG00000051412',], dds$Txt), main = "Vamp7", sort.names = FALSE )
+```
+
+
+```{r}
+boxplot(split(counts(dds)['ENSMUSG00000105078',], dds$Txt), main = "Vamp9", sort.names = FALSE )
+```
+
+
+HEATMAP
+
+```{r}
+
+Ruta <- c('ENSMUSG00000040046', 'ENSMUSG00000006764', 'ENSMUSG00000032269', 'ENSMUSG00000026228', 'ENSMUSG00000037580', 'ENSMUSG00000020182', 'ENSMUSG00000055197', 'ENSMUSG00000061740')
+
+betas <- coef(dds)
+colnames(betas)
+
+mat_Ola <- betas[Ruta, c(2,3)]
+thr <- 3 
+mat_Ola[mat_Ola < -thr] <- -thr
+mat_Ola[mat_Ola > thr] <- thr
+#pheatmap(mat_Ola, breaks=NA,
+#         cluster_col=FALSE,cluster_cols = FALSE, labels_row = res_Ola[Ruta, ]$symbol2, fontsize = 8, show_rownames = T, cellwidth=16, #cellheight=16,  filename = "Heatmaps/Serotonina.pdf" )
+
+pheatmap(mat_Ola, breaks=NA,
+         cluster_col=FALSE,cluster_cols = FALSE, labels_row = res_Ola[Ruta, ]$symbol2, labels_col= c("Ari vs chow","Ola vs chow"), angle_col = c("45"), fontsize = 8, show_rownames = T, cellwidth=16, cellheight=16)
+
+#pheatmap(mat_Ola, breaks=NA,
+         #cluster_col=FALSE,cluster_cols = FALSE, labels_row = res_Ola[Ruta, ]$symbol2,fontsize = 8, show_rownames = T, cellwidth=16, cellheight=16, filename = "Heatmaps/Serotonina.pdf")
+
+#write.xlsx(as.data.frame(res_Ola[Ruta,]), file = "CSVs/Serotonina.xlsx", row.names= TRUE)
+
+```
+
+
+HEATMAP
+
+```{r}
+
+Ruta <- c('ENSMUSG00000026228', 'ENSMUSG00000000215', 'ENSMUSG00000029644', 'ENSMUSG00000041798', 'ENSMUSG00000000394')
+
+betas <- coef(dds)
+colnames(betas)
+
+mat_Ola <- betas[Ruta, c(2,3)]
+thr <- 3 
+mat_Ola[mat_Ola < -thr] <- -thr
+mat_Ola[mat_Ola > thr] <- thr
+pheatmap(mat_Ola, breaks=NA,
+         cluster_col=FALSE,cluster_cols = FALSE, labels_row = res_Ola[Ruta, ]$symbol2, fontsize = 8, show_rownames = T, cellwidth=16, cellheight=16)
+
+#pheatmap(mat_Ola, breaks=NA,
+         #cluster_col=FALSE,cluster_cols = FALSE, labels_row = res_Ola[Ruta, ]$symbol2,fontsize = 8, show_rownames = T, cellwidth=16, cellheight=16, filename = "Heatmaps/Serotonina.pdf")
+
+#write.xlsx(as.data.frame(res_Ola[Ruta,]), file = "CSVs/Serotonina.xlsx", row.names= TRUE)
+
+```
+
+HEATMAP Growth factors and mTOR signaling
+
+```{r}
+
+Ruta <- c('ENSMUSG00000028159', 'ENSMUSG00000020122', 'ENSMUSG00000028179', 'ENSMUSG00000048583', 'ENSMUSG00000035198', 'ENSMUSG00000022351', 'ENSMUSG00000005533', 'ENSMUSG00000023456', 'ENSMUSG00000020423', 'ENSMUSG00000041220', 'ENSMUSG00000032349', 'ENSMUSG00000053192', 'ENSMUSG00000020089', 'ENSMUSG00000018189', 'ENSMUSG00000023830' )
+
+betas <- coef(dds)
+colnames(betas)
+
+mat_Ola <- betas[Ruta, c(2,3)]
+thr <- 3 
+mat_Ola[mat_Ola < -thr] <- -thr
+mat_Ola[mat_Ola > thr] <- thr
+pheatmap(mat_Ola, breaks=NA,
+         cluster_col=FALSE,cluster_cols = FALSE, labels_row = res_Ola[Ruta, ]$symbol2, fontsize = 8, show_rownames = T, cellwidth=16, cellheight=16,  filename = "Heatmaps/GrowthFactorsAndmTORSignaling.pdf" )
+
+```
+
+HEATMAP Insuline secretion and granulates
+
+```{r}
+
+Ruta <- c('ENSMUSG00000031255', 'ENSMUSG00000021587', 'ENSMUSG00000037428', 'ENSMUSG00000036402', 'ENSMUSG00000004961', 'ENSMUSG00000030536', 'ENSMUSG00000046159', 'ENSMUSG00000021303', 'ENSMUSG00000027350', 'ENSMUSG00000051209', 'ENSMUSG00000026204' )
+
+betas <- coef(dds)
+colnames(betas)
+
+mat_Ola <- betas[Ruta, c(2,3)]
+thr <- 3 
+mat_Ola[mat_Ola < -thr] <- -thr
+mat_Ola[mat_Ola > thr] <- thr
+pheatmap(mat_Ola, breaks=NA,
+         cluster_col=FALSE,cluster_cols = FALSE, labels_row = res_Ola[Ruta, ]$symbol2, fontsize = 8, show_rownames = T, cellwidth=16, cellheight=16,  filename = "Heatmaps/InsulineSecretionAndGranulates.pdf" )
+
+```
+
+HEATMAP Beta cell signature
+
+```{r}
+
+Ruta <- c('ENSMUSG00000021587', 'ENSMUSG00000047591', 'ENSMUSG00000022790', 'ENSMUSG00000000215', 'ENSMUSG00000044988', 'ENSMUSG00000035187', 'ENSMUSG00000022479', 'ENSMUSG00000027690', 'ENSMUSG00000035804', 'ENSMUSG00000027434')
+
+betas <- coef(dds)
+colnames(betas)
+
+mat_Ola <- betas[Ruta, c(2,3)]
+thr <- 3 
+mat_Ola[mat_Ola < -thr] <- -thr
+mat_Ola[mat_Ola > thr] <- thr
+pheatmap(mat_Ola, breaks=NA,
+         cluster_col=FALSE,cluster_cols = FALSE, labels_row = res_Ola[Ruta, ]$symbol2, fontsize = 8, show_rownames = T, cellwidth=16, cellheight=16,  filename = "Heatmaps/BetaCellSignature.pdf" )
+
+
+```
+
+HEATMAP ER stress
+
+```{r}
+
+Ruta <- c('ENSMUSG00000031770', 'ENSMUSG00000031771', 'ENSMUSG00000031772', 'ENSMUSG00000031773', 'ENSMUSG00000031774', 'ENSMUSG00000031775')
+
+betas <- coef(dds)
+colnames(betas)
+
+mat_Ola <- betas[Ruta, c(2,3)]
+thr <- 3 
+mat_Ola[mat_Ola < -thr] <- -thr
+mat_Ola[mat_Ola > thr] <- thr
+pheatmap(mat_Ola, breaks=NA,
+         cluster_col=FALSE,cluster_cols = FALSE, labels_row = res_Ola[Ruta, ]$symbol2, fontsize = 8, show_rownames = T, cellwidth=16, cellheight=16,  filename = "Heatmaps/ERStress.pdf" )
+
+
+```

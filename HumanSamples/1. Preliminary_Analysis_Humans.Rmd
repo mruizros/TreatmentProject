@@ -1,0 +1,250 @@
+---
+title: "Preliminary Analyasis Human Samples"
+output: html_notebook
+---
+
+This flow allow the preliminary analysis of the sequencing data and the creation of a DESeq object
+
+Set diectory pathway
+```{r}
+setwd("/Users/monica/Documents/Hisat2")
+indir="/Users/monica/Documents/Hisat2"
+```
+
+Libraries
+```{r}
+library("GenomicAlignments")
+library("magrittr")
+library("DESeq2")
+library("dplyr")
+library("ggplot2")
+library("pheatmap")
+library("RColorBrewer")
+library("PoiClaClu")
+library("genefilter")
+library("sva")
+```
+
+
+Load the Summirized Experiment with the counts
+```{r}
+load(file = "/Users/monica/Documents/Hisat2/Rscripts/se_hisat2.RData")
+```
+
+
+Some commands to se the object
+```{r}
+se
+dim(se)
+assayNames(se)
+head(assay(se), 3)
+colSums(assay(se))
+rowRanges(se)
+str(metadata(rowRanges(se)))
+colData(se)
+```
+
+Level of the Treatment
+```{r}
+#library("magrittr")
+se$Treatment %<>% relevel("Untreated_1")
+se$Treatment
+```
+
+We can quickly check the millions of fragments that uniquely aligned to the genes (the second argument of round tells how many decimal points to keep)
+
+```{r}
+round( colSums(assay(se)) / 1e6, 1 )
+```
+
+Specify Batch as factor
+```{r}
+se$Batch <- factor(se$Batch, levels = c("1","2"))
+```
+
+CONSTRUCT DESEQ2 OBJECT
+```{r}
+dds <- DESeqDataSet(se, design = ~ Batch + Treatment * Batch:Treatment)
+```
+
+Pre-filtering: Remove rows that have no counts, or only a single count across all samples
+```{r}
+nrow(dds)
+dds <- dds[ rowSums(counts(dds)) > 1, ]
+nrow(dds)
+```
+
+SAVE DDS
+```{r}
+save(dds, file = 'dds_hisat2.RData')
+```
+
+
+
+***The variance stabilizing transformation and the rlog***
+
+VSD
+```{r}
+vsd <- vst(dds, blind = FALSE)
+head(assay(vsd), 3)
+colData(vsd)
+```
+
+rlog:
+```{r}
+rld <- rlog(dds, blind = FALSE)
+head(assay(rld), 3)
+colData(rld)
+```
+
+To show the effect of the transformation, in the figure below we plot the first sample against the second, first simply using the log2 function (after adding 1, to avoid taking the log of zero), and then using the VST and rlog-transformed values. For the log2 approach, we need to first estimate size factors to account for sequencing depth, and then specify normalized=TRUE. Sequencing depth correction is done automatically for the vst and rlog.
+
+```{r}
+dds <- estimateSizeFactors(dds)
+
+df <- bind_rows(
+  as_data_frame(log2(counts(dds, normalized=TRUE)[, 1:2]+1)) %>%
+         mutate(transformation = "log2(x + 1)"),
+  as_data_frame(assay(vsd)[, 1:2]) %>% mutate(transformation = "vst"),
+  as_data_frame(assay(rld)[, 1:2]) %>% mutate(transformation = "rlog"))
+  
+colnames(df)[1:2] <- c("x", "y")  
+
+ggplot(df, aes(x = x, y = y)) + geom_hex(bins = 80) +
+  coord_fixed() + facet_grid( . ~ transformation) 
+```
+
+Sample distances
+
+```{r}
+sampleDists <- dist(t(assay(rld)))
+sampleDists
+```
+
+Heatmap of the distances
+
+```{r}
+sampleDistMatrix <- as.matrix( sampleDists )
+rownames(sampleDistMatrix) <- paste( rld$Treatment, rld$Volunteer, rld$Batch, rld$SampleName, sep = " - " )
+colnames(sampleDistMatrix) <- NULL
+colors <- colorRampPalette( rev(brewer.pal(9, "Blues")) )(255)
+pheatmap(sampleDistMatrix,
+         clustering_distance_rows = sampleDists,
+         clustering_distance_cols = sampleDists,
+         col = colors)
+```
+
+Poisson Distance (Witten 2011)
+```{r}
+poisd <- PoissonDistance(t(counts(dds)))
+
+samplePoisDistMatrix <- as.matrix( poisd$dd )
+rownames(samplePoisDistMatrix) <- paste( dds$Treatment, dds$Volunteer, dds$Batch, dds$Txt, sep=" - " )
+colnames(samplePoisDistMatrix) <- NULL
+pheatmap(samplePoisDistMatrix,
+         clustering_distance_rows = poisd$dd,
+         clustering_distance_cols = poisd$dd,
+         col = colors)
+```
+
+HEATMAP OF GENES
+
+```{r}
+topVarGenes <- head(order(rowVars(assay(rld)), decreasing = TRUE), 50)
+mat  <- assay(rld)[ topVarGenes, ]
+mat  <- mat - rowMeans(mat)
+anno <- as.data.frame(colData(rld)[, c("Sex","Treatment")])
+pheatmap(mat, annotation_col = anno)
+```
+
+
+
+
+
+PCA
+
+```{r}
+plotPCA(rld, intgroup = c("Batch"))
+```
+
+PCA from scratch
+
+```{r}
+pcaData <- plotPCA(rld, intgroup = c( "Volunteer","Condition"), returnData = TRUE)
+
+percentVar <- round(100 * attr(pcaData, "percentVar"))
+
+ggplot(pcaData, aes(x = PC1, y = PC2, color = Volunteer, shape = Condition)) +
+  geom_point(size =3) +
+  xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+  ylab(paste0("PC2: ", percentVar[2], "% variance")) +
+  coord_fixed()
+```
+
+PCA with Poisson data
+
+```{r}
+mdsPois <- as.data.frame(colData(dds)) %>%
+   cbind(cmdscale(samplePoisDistMatrix))
+ggplot(mdsPois, aes(x = `1`, y = `2`, color = Batch, shape = Treatment)) +
+  geom_point(size = 3) + coord_fixed()
+```
+
+
+Removing hidden batch effects
+```{r}
+dat  <- counts(dds, normalized = TRUE)
+idx  <- rowMeans(dat) > 1
+dat  <- dat[idx, ]
+mod  <- model.matrix(~ Treatment, colData(dds))
+mod0 <- model.matrix(~   1, colData(dds))
+svseq <- svaseq(dat, mod, mod0, n.sv = 2)
+
+svseq$sv
+```
+
+```{r}
+par(mfrow = c(2, 1), mar = c(3,5,3,1))
+for (i in 1:2) {
+  stripchart(svseq$sv[, i] ~ dds$Batch, vertical = TRUE, main = paste0("SV", i))
+  abline(h = 0)
+ }
+```
+
+```{r}
+ddssva <- dds
+ddssva$SV1 <- svseq$sv[,1]
+ddssva$SV2 <- svseq$sv[,2]
+design(ddssva) <- ~ SV1 + SV2 + Treatment
+```
+
+
+Libraries
+```{r}
+library("DESeq2")
+```
+
+
+CONSTRUCT DESEQ2 OBJECT
+```{r}
+dds <- DESeqDataSet(ddssva, design = ~ Batch + Sex + Condition + Treat_red + Condition:Treat_red)
+```
+
+Pre-filtering: Remove rows that have no counts, or only a single count across all samples
+```{r}
+nrow(dds)
+dds <- dds[ rowSums(counts(dds)) > 1, ]
+nrow(dds)
+```
+
+Run the differencial expression pipeline. This happens on the raw counts
+```{r}
+dds <- DESeq(dds)
+```
+
+
+```{r}
+res <- results(dds, contrast = c("Condition","T5","T0"))
+res
+summary(res)
+```

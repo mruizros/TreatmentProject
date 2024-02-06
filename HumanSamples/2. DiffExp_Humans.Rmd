@@ -1,0 +1,183 @@
+---
+title: "Differential Expression Humans"
+output: html_notebook
+---
+
+This flow allow the differential expression analysis of the human samples
+
+Remove all existing variables
+```{r}
+rm(list=ls())
+```
+
+
+Load the Summirized Experiment with the counts
+```{r}
+load(file = "Data/txiVolRun2.RData")
+```
+
+Load sample info from the sample table
+```{r}
+sampleTable <- read.csv("Data/SampleTableHumanos.csv", sep = ",")
+```
+
+
+Libraries
+```{r}
+library("DESeq2")
+library("pheatmap")
+library("AnnotationDbi")
+library("Homo.sapiens")
+```
+
+
+Generate DESeq2 object
+```{r}
+dds <- DESeqDataSetFromTximport(txi = txi.kallisto.tsv, colData = sampleTable, design = ~ Treatment)
+keep <- rowSums(counts(dds)) >= 10
+dds <- dds[keep,]
+dds <- DESeq(dds)
+```
+
+
+```{r}
+dds_sub <- dds[,which(dds$Volunteer %in% c("V. 13", "V. 15", "V. 18", "V. 19", "V. 20", "V. 21", "V.16", "V.22"))]
+```
+
+
+Pre-filtering: Remove rows that have no counts, or only a single count across all samples
+```{r}
+nrow(dds_sub)
+dds <- dds[ rowSums(counts(dds_sub)) > 1, ]
+nrow(dds_sub)
+```
+
+Run the differencial expression pipeline. This happens on the raw counts
+```{r}
+dds_sub<- DESeq(dds_sub)
+dds_sub$Treatment <- factor(dds_sub$Treatment, levels = c("Untreated","Aripiprazole","Olanzapine"))
+```
+
+
+
+****OLANZAPINE****
+
+```{r}
+res_sub_Ola <- results(dds_sub, contrast = c("Treatment","Olanzapine","Untreated"))
+res_sub_Ola
+summary(res_sub_Ola)
+```
+
+ADD ANOTATIONS:
+```{r}
+res_sub_Ola$symbol <- mapIds(Homo.sapiens,
+                     keys=row.names(res_sub_Ola),
+                     column="SYMBOL",
+                     keytype="ENSEMBL",
+                     multiVals="first")
+
+res_sub_Ola$entrez <- mapIds(Homo.sapiens,
+                     keys=row.names(res_sub_Ola),
+                     column="ENTREZID",
+                     keytype="ENSEMBL",
+                     multiVals="first")
+
+resOrdered_Ola <- res_sub_Ola[order(res_sub_Ola$padj),]
+head(resOrdered_Ola)
+```
+
+
+
+```{r}
+betas <- coef(dds_sub)
+colnames(betas)
+topGenes_Ola <- c(head(order(res_sub_Ola$log2FoldChange),50),tail(order(res_sub_Ola$log2FoldChange),50))
+mat_Ola <- betas[topGenes_Ola, c(3,4,5)]
+thr <- 3 
+mat_Ola[mat_Ola < -thr] <- -thr
+mat_Ola[mat_Ola > thr] <- thr
+pheatmap(mat_Ola, breaks=NA,
+         cluster_col=FALSE,cluster_cols = FALSE, labels_row = res_sub_Ola$symbol[topGenes_Ola],fontsize = 4, width = 4, height = 8, show_rownames = T, filename = "C:/Users/monica/Documents/Hisat2/Heatmaps/FoldChangeSinXY_Olanzapine.pdf")
+```
+
+SAVE HEATMAP CVS
+```{r}
+resOrdered_sub_Ola <- res_sub_Ola[order(res_sub_Ola$log2FoldChange),]
+resOrdered_subDF_Ola <- as.data.frame(resOrdered_sub_Ola)
+write.csv(resOrdered_subDF_Ola, file = "CSVs/FoldChangeSinXY_Olanzapine.csv")
+```
+
+SAVE UPREGULATED AND DOWN REGULATED
+```{r}
+LFC_Ola <- res_sub_Ola$log2FoldChange
+Allup_Ola <- res_sub_Ola[(which(LFC_Ola > 1.5)),]
+Allup_DP_Ola <- as.data.frame(Allup_Ola)
+write.csv(Allup_DP_Ola, file = "C:/Users/monica/Documents/Hisat2/CSVs/Allup_Olanzapine_1_5.csv")
+
+
+Alldown_Ola <- res_sub_Ola[(which(LFC_Ola < -1.5)),]
+Alldown_DP_Ola <- as.data.frame(Alldown_Ola)
+write.csv(Alldown_DP_Ola, file = "C:/Users/monica/Documents/Hisat2/CSVs/Alldown_Olanzapine_1_5.csv")
+```
+
+
+****ARIPIPRAZOLE****
+
+```{r}
+res_sub_Ari <- results(dds_sub, contrast = c("Treat_gen","Aripiprazole","Untreated"))
+res_sub_Ari
+summary(res_sub_Ari)
+```
+
+ADD ANOTATIONS:
+```{r}
+res_sub_Ari$symbol <- mapIds(Homo.sapiens,
+                     keys=row.names(res_sub_Ari),
+                     column="SYMBOL",
+                     keytype="ENSEMBL",
+                     multiVals="first")
+
+res_sub_Ari$entrez <- mapIds(Homo.sapiens,
+                     keys=row.names(res_sub_Ari),
+                     column="ENTREZID",
+                     keytype="ENSEMBL",
+                     multiVals="first")
+
+resOrdered_Ari <- res_sub_Ari[order(res_sub_Ari$padj),]
+head(resOrdered_Ari)
+```
+
+
+
+```{r}
+betas <- coef(dds_sub)
+colnames(betas)
+topGenes_Ari <- c(head(order(res_sub_Ari$log2FoldChange),50),tail(order(res_sub_Ari$log2FoldChange),50))
+mat_Ari <- betas[topGenes_Ari, c(3,4,5)]
+thr <- 3 
+mat_Ari[mat_Ari < -thr] <- -thr
+mat_Ari[mat_Ari > thr] <- thr
+pheatmap(mat_Ari, breaks=NA,
+         cluster_col=FALSE,cluster_cols = FALSE, labels_row = res_sub_Ari$symbol[topGenes_Ari],fontsize = 4, width = 4, height = 8, show_rownames = T, filename = "C:/Users/monica/Documents/Hisat2/Heatmaps/FoldChangeSinXY_Aripiprazole.pdf")
+```
+
+SAVE HEATMAP CVS
+```{r}
+resOrdered_sub_Ari <- res_sub_Ari[order(res_sub_Ari$log2FoldChange),]
+resOrdered_subDF_Ari <- as.data.frame(resOrdered_sub_Ari)
+write.csv(resOrdered_subDF_Ari, file = "C:/Users/monica/Documents/Hisat2/CSVs/FoldChangeSinXY_Aripiprazole.csv")
+```
+
+SAVE UPREGULATED AND DOWN REGULATED
+```{r}
+LFC_Ari <- res_sub_Ari$log2FoldChange
+Allup_Ari <- res_sub_Ari[(which(LFC_Ari > 1.5)),]
+Allup_DP_Ari <- as.data.frame(Allup_Ari)
+write.csv(Allup_DP_Ari, file = "C:/Users/monica/Documents/Hisat2/CSVs/Allup_Aripiprazole_1_5.csv")
+
+
+Alldown_Ari <- res_sub_Ari[(which(LFC_Ari < -1.5)),]
+Alldown_DP_Ari <- as.data.frame(Alldown_Ari)
+write.csv(Alldown_DP_Ari, file = "C:/Users/monica/Documents/Hisat2/CSVs/Alldown_Aripiprazole_1_5.csv")
+```
+
